@@ -85,8 +85,9 @@ case "$1" in
       # CURRENT_REPO_NAME の最初の _ までの文字列と受け取った TARGET_BRANCH が一致している場合は、元となるディレクトリに移動してから実行する
       CURRENT_REPO_NAME_PREFIX="${CURRENT_REPO_NAME%%_*}"
       if [ "${CURRENT_REPO_NAME_PREFIX}" = "${TARGET_BRANCH}" ]; then
-        echo "このディレクトリが削除されるため移動します..."
+        echo "ディレクトリ ${PARENT_DIR}/${BASE_REPO_NAME} に移動します。移動後もう一度実行してください。"
         exec "$SHELL" -c "cd \"${PARENT_DIR}/${BASE_REPO_NAME}\" && exec \"$SHELL\""
+        exit 0
       fi
       git worktree remove "$WORKTREE_NAME"
       if [ $? -ne 0 ]; then
