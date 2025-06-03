@@ -7,34 +7,47 @@
 #####################
 
 # 現在のGitリポジトリのルートディレクトリを取得
-REPO_ROOT=$(git rev-parse --show-toplevel)
-REPO_NAME=$(basename "$REPO_ROOT")
+CURRENT_REPO_ROOT=$(git rev-parse --show-toplevel)
+CURRENT_REPO_NAME=$(basename "$CURRENT_REPO_ROOT")
+
 BASE_BRANCH=main
-# worktree ディレクトリかどうかを判定
+# スクリプトのディレクトリ
+SCRIPT_DIR=$(dirname "$0")
+# リポジトリの親ディレクトリ
+PARENT_DIR=$(dirname "$CURRENT_REPO_ROOT")
+
+# worktree ディレクトリかどうかを判定する
 if [ "$(git rev-parse --git-dir)" = ".git" ]; then
   IS_WORKTREE=false
+  BASE_REPO_NAME="${CURRENT_REPO_NAME}"
 else
   IS_WORKTREE=true
+  BASE_REPO_NAME="${CURRENT_REPO_NAME#*_}"
 fi
 
-if [ -z "$REPO_ROOT" ]; then
+# 1. 現在のリポジトリがGitリポジトリであるかをチェック。Git リポジトリでなければ実行終了
+if [ -z "$CURRENT_REPO_ROOT" ]; then
   echo "エラー: Gitリポジトリではありません。"
   exit 1
 fi
 
-# スクリプトのディレクトリ
-SCRIPT_DIR=$(dirname "$0")
 
-# リポジトリの親ディレクトリ
-PARENT_DIR=$(dirname "$REPO_ROOT")
 
 # サブコマンドの処理
 case "$1" in
   "-b")
     # 作成モード
     TARGET_BRANCH="$2"
-    # {branchName}-{repoName} の形式でworktreeディレクトリを作成
-    WORKTREE_PATH="${PARENT_DIR}/${TARGET_BRANCH}-${REPO_NAME}"
+
+    # ブランチ名に _ が含まれていた場合、エラーとする
+    if echo "$TARGET_BRANCH" | grep -q "_"; then
+      echo "Error: ブランチ名に _ が含まれています。ブランチ名には _ を使用しないでください。"
+      exit 1
+    fi
+
+    # {branchName}_{repoName} の形式でworktreeディレクトリを作成
+    WORKTREE_NAME="${TARGET_BRANCH}_${BASE_REPO_NAME}"
+    WORKTREE_PATH="${PARENT_DIR}/${WORKTREE_NAME}"
 
     if [ -d "$WORKTREE_PATH" ]; then
       echo "Error: 既に ${WORKTREE_PATH} ディレクトリが存在します。"
@@ -64,20 +77,18 @@ case "$1" in
   "-r")
     # 削除モード
     TARGET_BRANCH="$2"
-    WORKTREE_PATH="${PARENT_DIR}/${REPO_NAME}"
+    WORKTREE_NAME="${TARGET_BRANCH}_${BASE_REPO_NAME}"
+    WORKTREE_PATH="${PARENT_DIR}/${WORKTREE_NAME}"
 
     if [ -d "$WORKTREE_PATH" ]; then
-      # FIXME: ここが WORKTREE_PATH を消すわけではない。消すのは {TARGET_BRANCH}-{REPO_NAME} のディレクトリ
       echo "worktreeディレクトリ ${WORKTREE_PATH} とブランチ ${TARGET_BRANCH} を削除します..."
-      # REPO_NAME の最初の - までの文字列と受け取った TARGET_BRANCH が一致している場合は、元となるディレクトリに移動してから実行する
-      REPO_NAME_PREFIX="${REPO_NAME%%-*}"
-      REPO_NAME_SUFFIX="${REPO_NAME#*-}"
-
-      if [ "${REPO_NAME_PREFIX}" = "${TARGET_BRANCH}" ]; then
+      # CURRENT_REPO_NAME の最初の _ までの文字列と受け取った TARGET_BRANCH が一致している場合は、元となるディレクトリに移動してから実行する
+      CURRENT_REPO_NAME_PREFIX="${CURRENT_REPO_NAME%%_*}"
+      if [ "${CURRENT_REPO_NAME_PREFIX}" = "${TARGET_BRANCH}" ]; then
         echo "このディレクトリが削除されるため移動します..."
-        exec "$SHELL" -c "cd \"$WORKTREE_PATH\" && exec \"$SHELL\""
+        exec "$SHELL" -c "cd \"${PARENT_DIR}/${BASE_REPO_NAME}\" && exec \"$SHELL\""
       fi
-      git worktree remove "$REPO_NAME"
+      git worktree remove "$CURRENT_REPO_NAME"
       if [ $? -ne 0 ]; then
         echo "Error: worktreeディレクトリの削除に失敗しました。"
         exit 1
@@ -99,7 +110,15 @@ case "$1" in
   *)
     # 移動モード (オプションなし)
     TARGET_BRANCH="$1"
-    WORKTREE_PATH="${PARENT_DIR}/${TARGET_BRANCH}-${REPO_NAME}"
+
+    # BASE_BRANCH の場合、 cd で移動するのみを行う
+    if [ "$TARGET_BRANCH" = "$BASE_BRANCH" ]; then
+      exec "$SHELL" -c "cd \"${PARENT_DIR}/${BASE_REPO_NAME}\" && exec \"$SHELL\""
+      echo "ディレクトリ ${PARENT_DIR}/${BASE_REPO_NAME} に移動しました。"
+      exit 0
+    fi
+
+    WORKTREE_PATH="${PARENT_DIR}/${TARGET_BRANCH}_${BASE_REPO_NAME}"
 
     if [ ! -d "$WORKTREE_PATH" ]; then
       echo "Error: worktreeディレクトリ ${WORKTREE_PATH} が見つかりません。"
