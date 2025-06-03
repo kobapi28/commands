@@ -88,7 +88,7 @@ case "$1" in
         echo "このディレクトリが削除されるため移動します..."
         exec "$SHELL" -c "cd \"${PARENT_DIR}/${BASE_REPO_NAME}\" && exec \"$SHELL\""
       fi
-      git worktree remove "$CURRENT_REPO_NAME"
+      git worktree remove "$WORKTREE_NAME"
       if [ $? -ne 0 ]; then
         echo "Error: worktreeディレクトリの削除に失敗しました。"
         exit 1
