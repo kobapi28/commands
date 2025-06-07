@@ -4,6 +4,7 @@
 # ./worktree.sh <branchName> # 指定した名前のブランチに対応するworktreeに移動
 # ./worktree.sh -b <branchName> # 指定した名前でブランチを作成、また {branchName}-{repoName} の形式でworktreeディレクトリを作成し移動
 # ./worktree.sh -r <branchName> # 指定した名前のブランチを削除、また {branchName}-{repoName} の形式でworktreeディレクトリを削除
+# ./worktree.sh -p <pr_number> # 指定したPR番号のブランチをチェックアウトし、pr-{pr_number}_{repoName} の形式でworktreeディレクトリを作成し移動
 #####################
 
 # 現在のGitリポジトリのルートディレクトリを取得
@@ -35,6 +36,74 @@ fi
 
 # サブコマンドの処理
 case "$1" in
+  "-p")
+    # PRモード
+    PR_NUMBER="$2"
+    
+    if [ -z "$PR_NUMBER" ]; then
+      echo "Error: PR番号を指定してください。"
+      echo "使用方法: ./worktree.sh -p <pr_number>"
+      exit 1
+    fi
+    
+    # PR番号が数値であることを確認
+    if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+      echo "Error: PR番号は数値である必要があります。"
+      exit 1
+    fi
+    
+    # pr-{pr_number}_{repoName} の形式でworktreeディレクトリを作成
+    WORKTREE_NAME="pr-${PR_NUMBER}_${BASE_REPO_NAME}"
+    WORKTREE_PATH="${PARENT_DIR}/${WORKTREE_NAME}"
+    
+    if [ -d "$WORKTREE_PATH" ]; then
+      echo "Error: 既に ${WORKTREE_PATH} ディレクトリが存在します。"
+      exit 1
+    fi
+    
+    echo "PR #${PR_NUMBER} のブランチをチェックアウトしています..."
+    
+    # gh pr checkout を使用してPRブランチをチェックアウト
+    if ! command -v gh >/dev/null 2>&1; then
+      echo "Error: GitHub CLI (gh) がインストールされていません。"
+      echo "GitHub CLI をインストールしてください: https://cli.github.com/"
+      exit 1
+    fi
+    
+    # PR情報を取得してブランチ名を確認
+    PR_BRANCH=$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName' 2>/dev/null)
+    if [ $? -ne 0 ] || [ -z "$PR_BRANCH" ]; then
+      echo "Error: PR #${PR_NUMBER} が見つかりません。"
+      exit 1
+    fi
+    
+    echo "worktreeを ${WORKTREE_PATH} に作成します..."
+    
+    # worktreeを作成してPRブランチをチェックアウト
+    git worktree add "$WORKTREE_PATH"
+    if [ $? -ne 0 ]; then
+      echo "Error: worktreeの作成に失敗しました。"
+      exit 1
+    fi
+    
+    # worktreeディレクトリでPRをチェックアウト
+    cd "$WORKTREE_PATH"
+    gh pr checkout "$PR_NUMBER"
+    if [ $? -ne 0 ]; then
+      echo "Error: PR #${PR_NUMBER} のチェックアウトに失敗しました。"
+      # 失敗した場合はworktreeを削除
+      cd "$CURRENT_REPO_ROOT"
+      git worktree remove "$WORKTREE_PATH"
+      exit 1
+    fi
+    
+    echo "worktreeを正常に作成しました。"
+    echo "worktreeディレクトリ: ${WORKTREE_PATH}"
+    echo "PRブランチ: ${PR_BRANCH}"
+    
+    # 該当ブランチへ移動
+    exec "$SHELL" -c "cd \"$WORKTREE_PATH\" && exec \"$SHELL\""
+    ;;
   "-b")
     # 作成モード
     TARGET_BRANCH="$2"
