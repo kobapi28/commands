@@ -18,6 +18,105 @@ SCRIPT_DIR=$(dirname "$0")
 # リポジトリの親ディレクトリ
 PARENT_DIR=$(dirname "$CURRENT_REPO_ROOT")
 
+# 共通関数定義
+
+# worktreeパスを生成する関数
+generate_worktree_path() {
+  local prefix="$1"
+  local identifier="$2"
+  local repo_name="$3"
+  
+  if [ "$prefix" = "pr" ]; then
+    echo "${PARENT_DIR}/pr-${identifier}_${repo_name}"
+  else
+    echo "${PARENT_DIR}/${identifier}_${repo_name}"
+  fi
+}
+
+# エラーメッセージを出力して終了する関数
+error_exit() {
+  echo "Error: $1"
+  exit 1
+}
+
+# 成功メッセージを出力する関数
+success_message() {
+  echo "$1"
+}
+
+# ディレクトリに移動する関数
+change_directory() {
+  local target_dir="$1"
+  exec "$SHELL" -c "cd \"$target_dir\" && exec \"$SHELL\""
+}
+
+# worktreeディレクトリの存在をチェックする関数
+check_worktree_exists() {
+  local worktree_path="$1"
+  local should_exist="$2"  # true/false
+  
+  if [ "$should_exist" = "true" ]; then
+    if [ ! -d "$worktree_path" ]; then
+      return 1
+    fi
+  else
+    if [ -d "$worktree_path" ]; then
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# 現在のworktreeから移動が必要かチェックし、必要なら移動する関数
+check_and_move_if_current_worktree() {
+  local target_name="$1"
+  local worktree_type="$2"  # "pr" or "branch"
+  
+  local should_move=false
+  
+  if [ "$worktree_type" = "pr" ]; then
+    local expected_name="pr-${target_name}_${BASE_REPO_NAME}"
+    if [ "${CURRENT_REPO_NAME}" = "${expected_name}" ]; then
+      should_move=true
+    fi
+  else
+    local current_prefix="${CURRENT_REPO_NAME%%_*}"
+    if [ "${current_prefix}" = "${target_name}" ]; then
+      should_move=true
+    fi
+  fi
+  
+  if [ "$should_move" = "true" ]; then
+    echo "ディレクトリ ${PARENT_DIR}/${BASE_REPO_NAME} に移動します。移動後もう一度実行してください。"
+    change_directory "${PARENT_DIR}/${BASE_REPO_NAME}"
+    exit 0
+  fi
+}
+
+# worktreeを削除する関数
+remove_worktree() {
+  local worktree_name="$1"
+  
+  git worktree remove "$worktree_name"
+  if [ $? -ne 0 ]; then
+    error_exit "worktreeディレクトリの削除に失敗しました。"
+  else
+    success_message "worktreeディレクトリを削除しました。"
+  fi
+}
+
+# ブランチを削除する関数
+remove_branch() {
+  local branch_name="$1"
+  local force="$2"  # "-d" or "-D"
+  
+  git branch ${force:-"-d"} "$branch_name"
+  if [ $? -ne 0 ]; then
+    error_exit "ブランチ ${branch_name} の削除に失敗しました。"
+  fi
+  success_message "ブランチ ${branch_name} を削除しました。"
+}
+
 # worktree ディレクトリかどうかを判定する
 if [ "$(git rev-parse --git-dir)" = ".git" ]; then
   IS_WORKTREE=false
@@ -29,8 +128,7 @@ fi
 
 # 1. 現在のリポジトリがGitリポジトリであるかをチェック。Git リポジトリでなければ実行終了
 if [ -z "$CURRENT_REPO_ROOT" ]; then
-  echo "エラー: Gitリポジトリではありません。"
-  exit 1
+  error_exit "Gitリポジトリではありません。"
 fi
 
 
@@ -42,40 +140,33 @@ case "$1" in
     PR_NUMBER="$2"
     
     if [ -z "$PR_NUMBER" ]; then
-      echo "Error: PR番号を指定してください。"
-      echo "使用方法: ./worktree.sh -p <pr_number>"
-      exit 1
+      error_exit "PR番号を指定してください。\n使用方法: ./worktree.sh -p <pr_number>"
     fi
     
     # PR番号が数値であることを確認
     if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
-      echo "Error: PR番号は数値である必要があります。"
-      exit 1
+      error_exit "PR番号は数値である必要があります。"
     fi
     
     # pr-{pr_number}_{repoName} の形式でworktreeディレクトリを作成
-    WORKTREE_NAME="pr-${PR_NUMBER}_${BASE_REPO_NAME}"
-    WORKTREE_PATH="${PARENT_DIR}/${WORKTREE_NAME}"
+    WORKTREE_PATH=$(generate_worktree_path "pr" "$PR_NUMBER" "$BASE_REPO_NAME")
+    WORKTREE_NAME=$(basename "$WORKTREE_PATH")
     
-    if [ -d "$WORKTREE_PATH" ]; then
-      echo "Error: 既に ${WORKTREE_PATH} ディレクトリが存在します。"
-      exit 1
+    if ! check_worktree_exists "$WORKTREE_PATH" "false"; then
+      error_exit "既に ${WORKTREE_PATH} ディレクトリが存在します。"
     fi
     
     echo "PR #${PR_NUMBER} のブランチをチェックアウトしています..."
     
     # gh pr checkout を使用してPRブランチをチェックアウト
     if ! command -v gh >/dev/null 2>&1; then
-      echo "Error: GitHub CLI (gh) がインストールされていません。"
-      echo "GitHub CLI をインストールしてください: https://cli.github.com/"
-      exit 1
+      error_exit "GitHub CLI (gh) がインストールされていません。\nGitHub CLI をインストールしてください: https://cli.github.com/"
     fi
     
     # PR情報を取得してブランチ名を確認
     PR_BRANCH=$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName' 2>/dev/null)
     if [ $? -ne 0 ] || [ -z "$PR_BRANCH" ]; then
-      echo "Error: PR #${PR_NUMBER} が見つかりません。"
-      exit 1
+      error_exit "PR #${PR_NUMBER} が見つかりません。"
     fi
     
     echo "worktreeを ${WORKTREE_PATH} に作成します..."
@@ -83,27 +174,25 @@ case "$1" in
     # worktreeを作成してPRブランチをチェックアウト
     git worktree add "$WORKTREE_PATH"
     if [ $? -ne 0 ]; then
-      echo "Error: worktreeの作成に失敗しました。"
-      exit 1
+      error_exit "worktreeの作成に失敗しました。"
     fi
     
     # worktreeディレクトリでPRをチェックアウト
     cd "$WORKTREE_PATH"
     gh pr checkout "$PR_NUMBER"
     if [ $? -ne 0 ]; then
-      echo "Error: PR #${PR_NUMBER} のチェックアウトに失敗しました。"
       # 失敗した場合はworktreeを削除
       cd "$CURRENT_REPO_ROOT"
       git worktree remove "$WORKTREE_PATH"
-      exit 1
+      error_exit "PR #${PR_NUMBER} のチェックアウトに失敗しました。"
     fi
     
-    echo "worktreeを正常に作成しました。"
+    success_message "worktreeを正常に作成しました。"
     echo "worktreeディレクトリ: ${WORKTREE_PATH}"
     echo "PRブランチ: ${PR_BRANCH}"
     
     # 該当ブランチへ移動
-    exec "$SHELL" -c "cd \"$WORKTREE_PATH\" && exec \"$SHELL\""
+    change_directory "$WORKTREE_PATH"
     ;;
   "-b")
     # 作成モード
@@ -111,38 +200,32 @@ case "$1" in
 
     # ブランチ名に _ が含まれていた場合、エラーとする
     if echo "$TARGET_BRANCH" | grep -q "_"; then
-      echo "Error: ブランチ名に _ が含まれています。ブランチ名には _ を使用しないでください。"
-      exit 1
+      error_exit "ブランチ名に _ が含まれています。ブランチ名には _ を使用しないでください。"
     fi
 
     # {branchName}_{repoName} の形式でworktreeディレクトリを作成
-    WORKTREE_NAME="${TARGET_BRANCH}_${BASE_REPO_NAME}"
-    WORKTREE_PATH="${PARENT_DIR}/${WORKTREE_NAME}"
+    WORKTREE_PATH=$(generate_worktree_path "branch" "$TARGET_BRANCH" "$BASE_REPO_NAME")
+    WORKTREE_NAME=$(basename "$WORKTREE_PATH")
 
-    if [ -d "$WORKTREE_PATH" ]; then
-      echo "Error: 既に ${WORKTREE_PATH} ディレクトリが存在します。"
-      echo "既存のworktreeを削除するには './worktree.sh -r ${TARGET_BRANCH}' を使用してください。"
-      exit 1
+    if ! check_worktree_exists "$WORKTREE_PATH" "false"; then
+      error_exit "既に ${WORKTREE_PATH} ディレクトリが存在します。\n既存のworktreeを削除するには './worktree.sh -r ${TARGET_BRANCH}' を使用してください。"
     fi
 
     # ブランチが存在するかをチェックし、存在していたらエラーを返す
     if git branch --list "$TARGET_BRANCH" | grep -q "$TARGET_BRANCH"; then
-      echo "Error: 既存のブランチ ${TARGET_BRANCH} が存在します。"
-      exit 1
+      error_exit "既存のブランチ ${TARGET_BRANCH} が存在します。"
     fi
 
     echo "worktreeを ${WORKTREE_PATH} に作成します..."
     git worktree add "$WORKTREE_PATH" -b "$TARGET_BRANCH"
     if [ $? -ne 0 ]; then
-      echo "Error: worktreeの作成に失敗しました。"
-      exit 1
+      error_exit "worktreeの作成に失敗しました。"
     fi
-    echo "worktreeを正常に作成しました。"
+    success_message "worktreeを正常に作成しました。"
     echo "worktreeディレクトリ: ${WORKTREE_PATH}"
 
     # 該当ブランチへ移動
-    exec "$SHELL" -c "cd \"$WORKTREE_PATH\" && exec \"$SHELL\""
-    echo "ブランチ ${TARGET_BRANCH} に移動しました。"
+    change_directory "$WORKTREE_PATH"
     ;;
   "-r")
     # 削除モード
@@ -152,26 +235,16 @@ case "$1" in
     if [[ "$TARGET_BRANCH" =~ ^[0-9]+$ ]]; then
       # PR番号の場合
       PR_NUMBER="$TARGET_BRANCH"
-      WORKTREE_NAME="pr-${PR_NUMBER}_${BASE_REPO_NAME}"
-      WORKTREE_PATH="${PARENT_DIR}/${WORKTREE_NAME}"
+      WORKTREE_PATH=$(generate_worktree_path "pr" "$PR_NUMBER" "$BASE_REPO_NAME")
+      WORKTREE_NAME=$(basename "$WORKTREE_PATH")
       
-      if [ -d "$WORKTREE_PATH" ]; then
+      if check_worktree_exists "$WORKTREE_PATH" "true"; then
         echo "PR #${PR_NUMBER} のworktreeディレクトリ ${WORKTREE_PATH} を削除します..."
         
-        # CURRENT_REPO_NAME が pr-{PR_NUMBER}_{BASE_REPO_NAME} の場合は、元となるディレクトリに移動してから実行する
-        if [ "${CURRENT_REPO_NAME}" = "${WORKTREE_NAME}" ]; then
-          echo "ディレクトリ ${PARENT_DIR}/${BASE_REPO_NAME} に移動します。移動後もう一度実行してください。"
-          exec "$SHELL" -c "cd \"${PARENT_DIR}/${BASE_REPO_NAME}\" && exec \"$SHELL\""
-          exit 0
-        fi
+        # 現在のworktreeからの移動が必要かチェック
+        check_and_move_if_current_worktree "$PR_NUMBER" "pr"
         
-        git worktree remove "$WORKTREE_NAME"
-        if [ $? -ne 0 ]; then
-          echo "Error: worktreeディレクトリの削除に失敗しました。"
-          exit 1
-        else
-          echo "worktreeディレクトリを削除しました。"
-        fi
+        remove_worktree "$WORKTREE_NAME"
         
         # PR対応のブランチ名を取得して削除
         # worktreeディレクトリが削除された後なので、git branchで確認
@@ -184,51 +257,29 @@ case "$1" in
           if [ $? -eq 0 ] && [ -n "$PR_BRANCH" ]; then
             # ローカルブランチが存在するかチェック
             if git branch --list "$PR_BRANCH" | grep -q "$PR_BRANCH"; then
-              git branch -D "$PR_BRANCH"
-              if [ $? -eq 0 ]; then
-                echo "ブランチ ${PR_BRANCH} を削除しました。"
-              else
-                echo "Warning: ブランチ ${PR_BRANCH} の削除に失敗しました。"
-              fi
+              remove_branch "$PR_BRANCH" "-D"
             fi
           fi
         fi
       else
-        echo "Error: PR #${PR_NUMBER} のworktreeディレクトリ ${WORKTREE_PATH} が見つかりません。"
-        exit 1
+        error_exit "PR #${PR_NUMBER} のworktreeディレクトリ ${WORKTREE_PATH} が見つかりません。"
       fi
     else
       # 通常のブランチ名の場合
-      WORKTREE_NAME="${TARGET_BRANCH}_${BASE_REPO_NAME}"
-      WORKTREE_PATH="${PARENT_DIR}/${WORKTREE_NAME}"
+      WORKTREE_PATH=$(generate_worktree_path "branch" "$TARGET_BRANCH" "$BASE_REPO_NAME")
+      WORKTREE_NAME=$(basename "$WORKTREE_PATH")
 
-      if [ -d "$WORKTREE_PATH" ]; then
+      if check_worktree_exists "$WORKTREE_PATH" "true"; then
         echo "worktreeディレクトリ ${WORKTREE_PATH} とブランチ ${TARGET_BRANCH} を削除します..."
-        # CURRENT_REPO_NAME の最初の _ までの文字列と受け取った TARGET_BRANCH が一致している場合は、元となるディレクトリに移動してから実行する
-        CURRENT_REPO_NAME_PREFIX="${CURRENT_REPO_NAME%%_*}"
-        if [ "${CURRENT_REPO_NAME_PREFIX}" = "${TARGET_BRANCH}" ]; then
-          echo "ディレクトリ ${PARENT_DIR}/${BASE_REPO_NAME} に移動します。移動後もう一度実行してください。"
-          exec "$SHELL" -c "cd \"${PARENT_DIR}/${BASE_REPO_NAME}\" && exec \"$SHELL\""
-          exit 0
-        fi
-        git worktree remove "$WORKTREE_NAME"
-        if [ $? -ne 0 ]; then
-          echo "Error: worktreeディレクトリの削除に失敗しました。"
-          exit 1
-        else
-          echo "worktreeディレクトリを削除しました。"
-        fi
+        # 現在のworktreeからの移動が必要かチェック
+        check_and_move_if_current_worktree "$TARGET_BRANCH" "branch"
+        
+        remove_worktree "$WORKTREE_NAME"
         
         # ブランチを削除
-        git branch -d "$TARGET_BRANCH"
-        if [ $? -ne 0 ]; then
-            echo "Error: ブランチ ${TARGET_BRANCH} の削除に失敗しました。"
-            exit 1
-        fi
-        echo "ブランチを削除しました。"
+        remove_branch "$TARGET_BRANCH"
       else
-        echo "Error: worktreeディレクトリ ${WORKTREE_PATH} が見つかりません。"
-        exit 1
+        error_exit "worktreeディレクトリ ${WORKTREE_PATH} が見つかりません。"
       fi
     fi
     ;;
@@ -238,21 +289,17 @@ case "$1" in
 
     # BASE_BRANCH の場合、 cd で移動するのみを行う
     if [ "$TARGET_BRANCH" = "$BASE_BRANCH" ]; then
-      exec "$SHELL" -c "cd \"${PARENT_DIR}/${BASE_REPO_NAME}\" && exec \"$SHELL\""
-      echo "ディレクトリ ${PARENT_DIR}/${BASE_REPO_NAME} に移動しました。"
+      change_directory "${PARENT_DIR}/${BASE_REPO_NAME}"
       exit 0
     fi
 
-    WORKTREE_PATH="${PARENT_DIR}/${TARGET_BRANCH}_${BASE_REPO_NAME}"
+    WORKTREE_PATH=$(generate_worktree_path "branch" "$TARGET_BRANCH" "$BASE_REPO_NAME")
 
-    if [ ! -d "$WORKTREE_PATH" ]; then
-      echo "Error: worktreeディレクトリ ${WORKTREE_PATH} が見つかりません。"
-      echo "${TARGET_BRANCH} ブランチのworktreeを作成するには './worktree.sh -b ${TARGET_BRANCH}' を使用してください。"
-      exit 1
+    if ! check_worktree_exists "$WORKTREE_PATH" "true"; then
+      error_exit "worktreeディレクトリ ${WORKTREE_PATH} が見つかりません。\n${TARGET_BRANCH} ブランチのworktreeを作成するには './worktree.sh -b ${TARGET_BRANCH}' を使用してください。"
     fi
 
     # worktreeディレクトリに移動
     echo "${WORKTREE_PATH} に移動します..."
-    exec "$SHELL" -c "cd \"$WORKTREE_PATH\" && exec \"$SHELL\""
-    echo "ディレクトリ ${WORKTREE_PATH} に移動しました。"
+    change_directory "$WORKTREE_PATH"
 esac
